@@ -7,20 +7,17 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/hooks/use-toast";
-import { Navbar } from "@/components/ui/navbar";
 
 export default function SetPassword() {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const [email, setEmail] = useState<string>("");
   const [pw, setPw] = useState("");
   const [confirm, setConfirm] = useState("");
   const [loading, setLoading] = useState(true);
-  const [exchanging, setExchanging] = useState(false);
   const [updating, setUpdating] = useState(false);
 
-  // Parse helpers (support code param and hash tokens)
+  // Parse helpers (for code and mentorId)
   function getQueryParam(name: string) {
     return new URLSearchParams(location.search).get(name);
   }
@@ -29,7 +26,7 @@ export default function SetPassword() {
   useEffect(() => {
     (async () => {
       try {
-        setExchanging(true);
+        setLoading(true);
 
         // Extract mentorId and code from query params
         const mentorId = getQueryParam("mentorId");
@@ -43,7 +40,6 @@ export default function SetPassword() {
             variant: "destructive",
           });
           setLoading(false);
-          setExchanging(false);
           return;
         }
 
@@ -55,7 +51,6 @@ export default function SetPassword() {
             variant: "destructive",
           });
           setLoading(false);
-          setExchanging(false);
           return;
         }
 
@@ -63,17 +58,24 @@ export default function SetPassword() {
         const { data, error } = await supabase.auth.exchangeCodeForSession(code);
         if (error) throw error;
 
-        const userEmail = data.user?.email ?? "";
-        setEmail(userEmail);
-
-        // Link the mentor's account to this user
-        const { error: claimErr } = await supabase.rpc("claim_mentor_by_email", { _email: userEmail });
-        if (claimErr) {
-          console.warn("[SetPassword] claim_mentor_by_email error:", claimErr.message);
+        // Validate mentorId
+        const { data: mentorData, error: mentorError } = await supabase
+          .from('mentors')
+          .select('id')
+          .eq('id', mentorId)
+          .single();
+        
+        if (mentorError || !mentorData) {
+          toast({
+            title: "Error",
+            description: "Mentor not found or invalid link.",
+            variant: "destructive",
+          });
+          setLoading(false);
+          return;
         }
 
         setLoading(false);
-        setExchanging(false);
       } catch (e: any) {
         toast({
           title: "Session error",
@@ -81,15 +83,14 @@ export default function SetPassword() {
           variant: "destructive",
         });
         setLoading(false);
-        setExchanging(false);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const canSubmit = useMemo(
-    () => pw.length >= 8 && pw === confirm && !!email,
-    [pw, confirm, email]
+    () => pw.length >= 8 && pw === confirm,
+    [pw, confirm]
   );
 
   // 2) Update password, then go DIRECTLY to Mentor Dashboard
@@ -130,14 +131,10 @@ export default function SetPassword() {
             <CardTitle>Set Your Password</CardTitle>
           </CardHeader>
           <CardContent>
-            {loading || exchanging ? (
+            {loading ? (
               <p className="text-sm text-muted-foreground">Preparing your account…</p>
             ) : (
               <form onSubmit={handleSetPassword} className="space-y-4">
-                <div>
-                  <Label>Email</Label>
-                  <Input value={email} readOnly />
-                </div>
                 <div>
                   <Label>Create Password</Label>
                   <Input
