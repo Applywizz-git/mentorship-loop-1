@@ -31,3 +31,5 @@ out
 .env
 .env.local
 .vercel
+
+server.js
