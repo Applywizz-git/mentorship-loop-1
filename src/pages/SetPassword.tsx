@@ -6,7 +6,6 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/hooks/use-toast";
-import { Navbar } from "@/components/ui/navbar";
 
 export default function SetPassword() {
   const location = useLocation();
@@ -16,88 +15,67 @@ export default function SetPassword() {
   const [pw, setPw] = useState("");
   const [confirm, setConfirm] = useState("");
   const [loading, setLoading] = useState(true);
-  const [exchanging, setExchanging] = useState(false);
   const [updating, setUpdating] = useState(false);
+  const [mentorId, setMentorId] = useState<string>("");
 
-  // Parse helpers (support code param and hash tokens)
   function getQueryParam(name: string) {
     return new URLSearchParams(location.search).get(name);
   }
 
-  // 1) Extract mentorId and validate it
   useEffect(() => {
     const mentorIdFromUrl = getQueryParam("mentorId");
+    const emailFromUrl = getQueryParam("email");
 
-    console.log('mentorId from URL:', mentorIdFromUrl);
+    console.log('Params from URL:', { mentorIdFromUrl, emailFromUrl });
 
-    if (!mentorIdFromUrl) {
+    if (!mentorIdFromUrl || !emailFromUrl) {
       toast({
         title: "Error",
-        description: "Invalid link. Please request a new one.",
+        description: "Invalid invitation link. Please request a new one.",
         variant: "destructive",
       });
       setLoading(false);
       return;
     }
 
-    // 2) Validate the mentorId by checking if it exists in the database and get the mentor's email
-    const verifyMentorId = async () => {
-      const { data, error } = await supabase
-        .from("mentors")
-        .select("id, applicant_email") // Select necessary fields for validation
-        .eq("id", mentorIdFromUrl) // Match mentorId in the database
-        .single();
+    setMentorId(mentorIdFromUrl);
+    setEmail(emailFromUrl);
+    
+    // Verify the mentor exists and is approved
+    const verifyMentor = async () => {
+      try {
+        const { data: mentorData, error } = await supabase
+          .from("mentors")
+          .select("id, applicant_email, status")
+          .eq("id", mentorIdFromUrl)
+          .single();
 
-      if (error || !data) {
-        console.error(`Error fetching mentor: ${error?.message || "Mentor not found"}`);
+        if (error || !mentorData) {
+          throw new Error("Mentor not found");
+        }
+
+        if (mentorData.status !== "approved") {
+          throw new Error("Mentor account is not approved yet");
+        }
+
+        // Verify email matches
+        if (mentorData.applicant_email !== emailFromUrl) {
+          throw new Error("Email does not match mentor records");
+        }
+
+        setLoading(false);
+      } catch (error: any) {
+        console.error('Error verifying mentor:', error);
         toast({
-          title: "Error",
-          description: "Mentor not found or invalid link.",
+          title: "Invalid Link",
+          description: error.message || "This invitation link is invalid or expired.",
           variant: "destructive",
         });
         setLoading(false);
-        return;
       }
-
-      // Use mentor's email to sign in
-      const mentorEmail = data.applicant_email;
-      console.log("Mentor email:", mentorEmail);
-
-      // Sign in the mentor manually using the email and a temporary password
-      const { data: signInData, error: signInError } = await supabase.auth.signIn({
-        email: mentorEmail,
-        password: 'temporaryPassword', // A temporary password or you can generate one
-      });
-
-      if (signInError) {
-        console.error('Error signing in mentor:', signInError.message);
-        toast({
-          title: "Authentication Error",
-          description: signInError.message ?? "Could not authenticate the mentor.",
-          variant: "destructive",
-        });
-        setLoading(false);
-        return;
-      }
-
-      // Ensure a session is created manually if it's not already created
-      const { session, error: sessionError } = await supabase.auth.getSession();
-      if (sessionError || !session) {
-        console.error('Error creating session:', sessionError?.message);
-        toast({
-          title: "Session Error",
-          description: "Failed to create session. Please try again.",
-          variant: "destructive",
-        });
-        setLoading(false);
-        return;
-      }
-
-      setEmail(mentorEmail);  // Set email for display in form
-      setLoading(false);
     };
 
-    verifyMentorId();
+    verifyMentor();
   }, [location.search]);
 
   const canSubmit = useMemo(
@@ -105,30 +83,92 @@ export default function SetPassword() {
     [pw, confirm, email]
   );
 
-  // 3) Handle password update after mentor authentication
-  async function handleSetPassword(e: React.FormEvent) {
+  async function handleCreateAccount(e: React.FormEvent) {
     e.preventDefault();
-    if (!canSubmit) return;
+    if (!canSubmit || !email || !mentorId) return;
 
     try {
       setUpdating(true);
 
-      // Update the password in Supabase
-      const { error } = await supabase.auth.updateUser({ password: pw });
-      if (error) throw error;
-
-      toast({
-        title: "Password created successfully",
-        description: "Welcome! Taking you to your mentor dashboard.",
+      // SIMPLE APPROACH: Just create the account using Supabase Auth
+      const { data, error } = await supabase.auth.signUp({
+        email: email,
+        password: pw,
+        options: {
+          data: {
+            mentor_id: mentorId,
+            user_type: 'mentor'
+          },
+          // Optional: Redirect after email confirmation
+          emailRedirectTo: `${window.location.origin}/dashboard/mentor`
+        }
       });
 
-      setTimeout(() => {
-        navigate("/dashboard/mentor", { replace: true });
-      }, 150);
-    } catch (e: any) {
+      if (error) {
+        // If user already exists, try signing them in
+        if (error.message.includes('already registered')) {
+          const { error: signInError } = await supabase.auth.signInWithPassword({
+            email: email,
+            password: pw,
+          });
+
+          if (signInError) {
+            // If sign in fails, guide user to reset password
+            toast({
+              title: "Account Exists",
+              description: "An account with this email already exists. Please sign in or reset your password.",
+              variant: "destructive",
+            });
+            return;
+          }
+
+          // Sign in successful - redirect to dashboard
+          toast({
+            title: "Welcome back!",
+            description: "Taking you to your dashboard.",
+          });
+          
+          setTimeout(() => {
+            navigate("/dashboard/mentor", { replace: true });
+          }, 1500);
+          return;
+        }
+        throw error;
+      }
+
+      if (data.user) {
+        // Update mentor record with the user_id
+        const { error: updateError } = await supabase
+          .from("mentors")
+          .update({ user_id: data.user.id })
+          .eq("id", mentorId);
+
+        if (updateError) {
+          console.error("Failed to update mentor with user_id:", updateError);
+        }
+
+        toast({
+          title: "Account created successfully!",
+          description: "Welcome to your mentor dashboard.",
+        });
+
+        // Redirect to dashboard
+        setTimeout(() => {
+          navigate("/dashboard/mentor", { replace: true });
+        }, 1500);
+      } else {
+        // Email confirmation required
+        toast({
+          title: "Check your email",
+          description: "We've sent you a confirmation link. Please check your email.",
+        });
+      }
+
+    } catch (error: any) {
+      console.error('Account creation error:', error);
       toast({
-        title: "Could not set password",
-        description: e?.message ?? "Please try again.",
+        title: "Error creating account",
+        description: error.message || "Please try again.",
         variant: "destructive",
       });
     } finally {
@@ -136,50 +176,75 @@ export default function SetPassword() {
     }
   }
 
-  return (
-    <>
+  if (loading) {
+    return (
       <div className="max-w-md mx-auto px-6 py-10">
         <Card>
-          <CardHeader>
-            <CardTitle>Set Your Password</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {loading || exchanging ? (
-              <p className="text-sm text-muted-foreground">Preparing your account…</p>
-            ) : (
-              <form onSubmit={handleSetPassword} className="space-y-4">
-                <div>
-                  <Label>Email</Label>
-                  <Input value={email} readOnly />
-                </div>
-                <div>
-                  <Label>Create Password</Label>
-                  <Input
-                    type="password"
-                    placeholder="At least 8 characters"
-                    value={pw}
-                    onChange={(e) => setPw(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <Label>Confirm Password</Label>
-                  <Input
-                    type="password"
-                    value={confirm}
-                    onChange={(e) => setConfirm(e.target.value)}
-                  />
-                </div>
-                <Button type="submit" className="w-full" disabled={!canSubmit || updating}>
-                  {updating ? "Saving…" : "Save & Continue"}
-                </Button>
-                <p className="text-xs text-muted-foreground">
-                  After saving, you’ll be redirected straight to your mentor dashboard.
-                </p>
-              </form>
-            )}
+          <CardContent className="pt-6">
+            <div className="text-center">
+              <p className="text-sm text-muted-foreground">Verifying your invitation...</p>
+            </div>
           </CardContent>
         </Card>
       </div>
-    </>
+    );
+  }
+
+  return (
+    <div className="max-w-md mx-auto px-6 py-10">
+      <Card>
+        <CardHeader>
+          <CardTitle>Create Your Account</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleCreateAccount} className="space-y-4">
+            <div>
+              <Label>Email</Label>
+              <Input value={email} readOnly className="bg-muted" />
+            </div>
+            
+            <div>
+              <Label>Create Password</Label>
+              <Input
+                type="password"
+                placeholder="At least 8 characters"
+                value={pw}
+                onChange={(e) => setPw(e.target.value)}
+                minLength={8}
+                required
+              />
+            </div>
+            
+            <div>
+              <Label>Confirm Password</Label>
+              <Input
+                type="password"
+                placeholder="Confirm your password"
+                value={confirm}
+                onChange={(e) => setConfirm(e.value)}
+                minLength={8}
+                required
+              />
+            </div>
+            
+            {pw && confirm && pw !== confirm && (
+              <p className="text-sm text-destructive">Passwords do not match</p>
+            )}
+            
+            <Button 
+              type="submit" 
+              className="w-full" 
+              disabled={!canSubmit || updating}
+            >
+              {updating ? "Creating your account..." : "Create Account & Continue"}
+            </Button>
+            
+            <p className="text-xs text-muted-foreground text-center">
+              You'll be redirected to your mentor dashboard after account creation.
+            </p>
+          </form>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
