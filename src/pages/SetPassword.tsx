@@ -39,11 +39,11 @@ export default function SetPassword() {
       return;
     }
 
-    // 2) Validate the mentorId by checking if it exists in the database
+    // 2) Validate the mentorId by checking if it exists in the database and get the mentor's email
     const verifyMentorId = async () => {
       const { data, error } = await supabase
         .from("mentors")
-        .select("id, applicant_email, user_id") // Select necessary fields for validation
+        .select("id, applicant_email") // Select necessary fields for validation
         .eq("id", mentorIdFromUrl) // Match mentorId in the database
         .single();
 
@@ -58,22 +58,28 @@ export default function SetPassword() {
         return;
       }
 
-      // 3) Use the mentor's email to sign in via Supabase Auth
-      const { data: authData, error: authError } = await supabase.auth.signIn({
-        email: data.applicant_email, // Sign in using the mentor's email
-        password: 'temporaryPassword', // You can use a temporary password here if required
+      // Use mentor's email to sign in
+      const mentorEmail = data.applicant_email;
+      console.log("Mentor email:", mentorEmail);
+
+      // Sign in the mentor manually using the email
+      const { data: signInData, error: signInError } = await supabase.auth.signIn({
+        email: mentorEmail,
+        password: 'temporaryPassword', // A temporary password or you can generate one
       });
 
-      if (authError) {
+      if (signInError) {
+        console.error('Error signing in mentor:', signInError.message);
         toast({
           title: "Authentication Error",
-          description: authError.message ?? "Could not authenticate the mentor.",
+          description: signInError.message ?? "Could not authenticate the mentor.",
           variant: "destructive",
         });
         setLoading(false);
         return;
       }
 
+      // Mentor is authenticated, allow them to set their password
       setMentorId(mentorIdFromUrl); // Save mentorId for later use
       setLoading(false);
     };
@@ -86,7 +92,7 @@ export default function SetPassword() {
     [pw, confirm, mentorId]
   );
 
-  // 4) Handle password update after mentor authentication
+  // 3) Handle password update after mentor authentication
   async function handleSetPassword(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
