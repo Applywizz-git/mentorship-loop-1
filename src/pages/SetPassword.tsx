@@ -7,7 +7,6 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/hooks/use-toast";
-import { Navbar } from "@/components/ui/navbar";
 
 export default function SetPassword() {
   const location = useLocation();
@@ -17,7 +16,6 @@ export default function SetPassword() {
   const [pw, setPw] = useState("");
   const [confirm, setConfirm] = useState("");
   const [loading, setLoading] = useState(true);
-  const [exchanging, setExchanging] = useState(false);
   const [updating, setUpdating] = useState(false);
 
   // Parse helpers (support code param and hash tokens)
@@ -29,7 +27,7 @@ export default function SetPassword() {
   useEffect(() => {
     const mentorIdFromUrl = getQueryParam("mentorId");
 
-    console.log('mentorId from URL:', mentorIdFromUrl);
+    console.log("mentorId from URL:", mentorIdFromUrl);
 
     if (!mentorIdFromUrl) {
       toast({
@@ -60,41 +58,9 @@ export default function SetPassword() {
         return;
       }
 
-      // Use mentor's email to sign in
+      // Use mentor's email
       const mentorEmail = data.applicant_email;
-      console.log("Mentor email:", mentorEmail);
-
-      // Sign in the mentor manually using the email and a temporary password
-      const { data: signInData, error: signInError } = await supabase.auth.signIn({
-        email: mentorEmail,
-        password: 'temporaryPassword', // A temporary password or you can generate one
-      });
-
-      if (signInError) {
-        console.error('Error signing in mentor:', signInError.message);
-        toast({
-          title: "Authentication Error",
-          description: signInError.message ?? "Could not authenticate the mentor.",
-          variant: "destructive",
-        });
-        setLoading(false);
-        return;
-      }
-
-      // Ensure a session is created
-      const { session, error: sessionError } = await supabase.auth.getSession();
-      if (sessionError || !session) {
-        console.error('Error creating session:', sessionError?.message);
-        toast({
-          title: "Session Error",
-          description: "Failed to create session. Please try again.",
-          variant: "destructive",
-        });
-        setLoading(false);
-        return;
-      }
-
-      setEmail(mentorEmail);  // Set email for display in form
+      setEmail(mentorEmail); // Set the mentor's email for the form
       setLoading(false);
     };
 
@@ -106,7 +72,7 @@ export default function SetPassword() {
     [pw, confirm, email]
   );
 
-  // 3) Handle password update after mentor authentication
+  // 2) Handle password update after mentor authentication
   async function handleSetPassword(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
@@ -114,9 +80,39 @@ export default function SetPassword() {
     try {
       setUpdating(true);
 
-      // Update the password in Supabase
-      const { error } = await supabase.auth.updateUser({ password: pw });
-      if (error) throw error;
+      // Check if user already exists
+      const { data, error } = await supabase.auth.signUp({
+        email: email,
+        password: pw,
+      });
+
+      if (error) {
+        console.error("Error creating user:", error.message);
+        toast({
+          title: "Error",
+          description: "Could not create user.",
+          variant: "destructive",
+        });
+        setUpdating(false);
+        return;
+      }
+
+      // After creating the user, auto-login them
+      const { data: signInData, error: signInError } = await supabase.auth.signIn({
+        email: email,
+        password: pw, // Use the password the mentor just created
+      });
+
+      if (signInError) {
+        console.error("Error signing in mentor:", signInError.message);
+        toast({
+          title: "Error",
+          description: signInError.message ?? "Could not log in.",
+          variant: "destructive",
+        });
+        setUpdating(false);
+        return;
+      }
 
       toast({
         title: "Password created successfully",
@@ -145,7 +141,7 @@ export default function SetPassword() {
             <CardTitle>Set Your Password</CardTitle>
           </CardHeader>
           <CardContent>
-            {loading || exchanging ? (
+            {loading ? (
               <p className="text-sm text-muted-foreground">Preparing your account…</p>
             ) : (
               <form onSubmit={handleSetPassword} className="space-y-4">
