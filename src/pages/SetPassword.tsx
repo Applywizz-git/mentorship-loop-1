@@ -27,7 +27,7 @@ export default function SetPassword() {
   useEffect(() => {
     const mentorIdFromUrl = getQueryParam("mentorId");
 
-    console.log('mentorId from URL:', mentorIdFromUrl); // Log the mentorId for debugging
+    console.log('mentorId from URL:', mentorIdFromUrl);
 
     if (!mentorIdFromUrl) {
       toast({
@@ -43,7 +43,7 @@ export default function SetPassword() {
     const verifyMentorId = async () => {
       const { data, error } = await supabase
         .from("mentors")
-        .select("id, applicant_email, name") // Select necessary fields for validation
+        .select("id, applicant_email, user_id") // Select necessary fields for validation
         .eq("id", mentorIdFromUrl) // Match mentorId in the database
         .single();
 
@@ -58,7 +58,22 @@ export default function SetPassword() {
         return;
       }
 
-      console.log('Mentor Data:', data); // Log mentor data to verify
+      // 3) Use the mentor's email to sign in via Supabase Auth
+      const { data: authData, error: authError } = await supabase.auth.signIn({
+        email: data.applicant_email, // Sign in using the mentor's email
+        password: 'temporaryPassword', // You can use a temporary password here if required
+      });
+
+      if (authError) {
+        toast({
+          title: "Authentication Error",
+          description: authError.message ?? "Could not authenticate the mentor.",
+          variant: "destructive",
+        });
+        setLoading(false);
+        return;
+      }
+
       setMentorId(mentorIdFromUrl); // Save mentorId for later use
       setLoading(false);
     };
@@ -71,7 +86,7 @@ export default function SetPassword() {
     [pw, confirm, mentorId]
   );
 
-  // 3) Handle password update after mentor authentication
+  // 4) Handle password update after mentor authentication
   async function handleSetPassword(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
