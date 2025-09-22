@@ -18,12 +18,12 @@ export default function SetPassword() {
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
 
-  // Parse helper to extract the mentorId from the URL
+  // Helper function to get query parameters from the URL
   function getQueryParam(name: string) {
     return new URLSearchParams(location.search).get(name);
   }
 
-  // 1) Extract mentorId and verify it
+  // 1) Extract mentorId and validate it
   useEffect(() => {
     const mentorIdFromUrl = getQueryParam("mentorId");
 
@@ -41,7 +41,7 @@ export default function SetPassword() {
     const verifyMentorId = async () => {
       const { data, error } = await supabase
         .from("mentors")
-        .select("id")
+        .select("id, email")
         .eq("id", mentorIdFromUrl)
         .single();
 
@@ -55,8 +55,22 @@ export default function SetPassword() {
         return;
       }
 
-      // If mentorId is valid, proceed with setting password
-      setMentorId(mentorIdFromUrl);
+      // 3) Authenticate the mentor using the mentorId (sign in or create session)
+      const { data: authData, error: authError } = await supabase.auth.signIn({
+        email: data.email, // Use the email retrieved from the mentor
+      });
+
+      if (authError) {
+        toast({
+          title: "Authentication Error",
+          description: authError.message,
+          variant: "destructive",
+        });
+        setLoading(false);
+        return;
+      }
+
+      setMentorId(mentorIdFromUrl); // Store the mentorId for further actions
       setLoading(false);
     };
 
@@ -68,7 +82,7 @@ export default function SetPassword() {
     [pw, confirm, mentorId]
   );
 
-  // 3) Handle password update
+  // 4) Handle password update after mentor authentication
   async function handleSetPassword(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
