@@ -79,6 +79,19 @@ export default function SetPassword() {
         return;
       }
 
+      // Check if session is created
+      const { session, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError || !session) {
+        console.error('Error creating session:', sessionError?.message);
+        toast({
+          title: "Session Error",
+          description: "Failed to create session. Please try again.",
+          variant: "destructive",
+        });
+        setLoading(false);
+        return;
+      }
+
       // Mentor is authenticated, allow them to set their password
       setMentorId(mentorIdFromUrl); // Save mentorId for later use
       setLoading(false);
