@@ -26,12 +26,29 @@ export default function SetPassword() {
     const mentorIdFromUrl = getQueryParam("mentorId");
     const emailFromUrl = getQueryParam("email");
 
-    console.log('Params from URL:', { mentorIdFromUrl, emailFromUrl });
+    console.log('🔍 DEBUG - URL Params:', { 
+      mentorIdFromUrl, 
+      emailFromUrl,
+      fullUrl: window.location.href,
+      search: location.search 
+    });
 
-    if (!mentorIdFromUrl || !emailFromUrl) {
+    if (!mentorIdFromUrl) {
+      console.error('❌ DEBUG - Missing mentorId from URL');
       toast({
-        title: "Error",
-        description: "Invalid invitation link. Please request a new one.",
+        title: "Invalid Link",
+        description: "Missing mentor ID in the invitation link.",
+        variant: "destructive",
+      });
+      setLoading(false);
+      return;
+    }
+
+    if (!emailFromUrl) {
+      console.error('❌ DEBUG - Missing email from URL');
+      toast({
+        title: "Invalid Link",
+        description: "Missing email in the invitation link.",
         variant: "destructive",
       });
       setLoading(false);
@@ -40,34 +57,68 @@ export default function SetPassword() {
 
     setMentorId(mentorIdFromUrl);
     setEmail(emailFromUrl);
-    
-    // Verify the mentor exists and is approved
+
     const verifyMentor = async () => {
       try {
+        console.log('🔍 DEBUG - Starting mentor verification for ID:', mentorIdFromUrl);
+        
+        // First, let's check if the mentors table exists and is accessible
+        const { data: tableCheck, error: tableError } = await supabase
+          .from("mentors")
+          .select("count")
+          .limit(1);
+
+        if (tableError) {
+          console.error('❌ DEBUG - Table access error:', tableError);
+          throw new Error(`Cannot access mentors table: ${tableError.message}`);
+        }
+
+        console.log('✅ DEBUG - Mentors table is accessible');
+
+        // Now query the specific mentor
         const { data: mentorData, error } = await supabase
           .from("mentors")
-          .select("id, applicant_email, status")
+          .select("id, applicant_email, name, status")
           .eq("id", mentorIdFromUrl)
           .single();
 
-        if (error || !mentorData) {
-          throw new Error("Mentor not found");
+        console.log('🔍 DEBUG - Query result:', { mentorData, error });
+
+        if (error) {
+          console.error('❌ DEBUG - Mentor query error:', error);
+          if (error.code === 'PGRST116') { // No rows returned
+            throw new Error(`Mentor with ID "${mentorIdFromUrl}" not found in the database.`);
+          }
+          throw new Error(`Database error: ${error.message}`);
         }
 
+        if (!mentorData) {
+          throw new Error("Mentor record not found");
+        }
+
+        console.log('✅ DEBUG - Mentor found:', mentorData);
+
+        // Check if mentor is approved
         if (mentorData.status !== "approved") {
-          throw new Error("Mentor account is not approved yet");
+          throw new Error(`Mentor account status is "${mentorData.status}" but needs to be "approved"`);
         }
 
         // Verify email matches
         if (mentorData.applicant_email !== emailFromUrl) {
-          throw new Error("Email does not match mentor records");
+          console.warn('⚠️ DEBUG - Email mismatch:', {
+            dbEmail: mentorData.applicant_email,
+            urlEmail: emailFromUrl
+          });
+          throw new Error("Email in the link does not match the mentor's registered email.");
         }
 
+        console.log('✅ DEBUG - Mentor verification successful');
         setLoading(false);
+
       } catch (error: any) {
-        console.error('Error verifying mentor:', error);
+        console.error('❌ DEBUG - Verification failed:', error);
         toast({
-          title: "Invalid Link",
+          title: "Invalid Invitation Link",
           description: error.message || "This invitation link is invalid or expired.",
           variant: "destructive",
         });
@@ -89,8 +140,9 @@ export default function SetPassword() {
 
     try {
       setUpdating(true);
+      console.log('🔍 DEBUG - Starting account creation for:', { email, mentorId });
 
-      // SIMPLE APPROACH: Just create the account using Supabase Auth
+      // Simple signup flow
       const { data, error } = await supabase.auth.signUp({
         email: email,
         password: pw,
@@ -98,34 +150,28 @@ export default function SetPassword() {
           data: {
             mentor_id: mentorId,
             user_type: 'mentor'
-          },
-          // Optional: Redirect after email confirmation
-          emailRedirectTo: `${window.location.origin}/dashboard/mentor`
+          }
         }
       });
 
       if (error) {
-        // If user already exists, try signing them in
+        console.error('❌ DEBUG - Signup error:', error);
+        
         if (error.message.includes('already registered')) {
+          // Try to sign in instead
           const { error: signInError } = await supabase.auth.signInWithPassword({
             email: email,
             password: pw,
           });
 
           if (signInError) {
-            // If sign in fails, guide user to reset password
-            toast({
-              title: "Account Exists",
-              description: "An account with this email already exists. Please sign in or reset your password.",
-              variant: "destructive",
-            });
-            return;
+            throw new Error("An account with this email already exists. Please use the password reset feature if you forgot your password.");
           }
 
-          // Sign in successful - redirect to dashboard
+          // Sign in successful
           toast({
             title: "Welcome back!",
-            description: "Taking you to your dashboard.",
+            description: "Successfully signed in to your account.",
           });
           
           setTimeout(() => {
@@ -137,14 +183,17 @@ export default function SetPassword() {
       }
 
       if (data.user) {
-        // Update mentor record with the user_id
+        console.log('✅ DEBUG - Account created successfully, user:', data.user.id);
+        
+        // Update mentor record with user_id
         const { error: updateError } = await supabase
           .from("mentors")
           .update({ user_id: data.user.id })
           .eq("id", mentorId);
 
         if (updateError) {
-          console.error("Failed to update mentor with user_id:", updateError);
+          console.error('⚠️ DEBUG - Failed to update mentor record:', updateError);
+          // Don't throw error - this is non-critical
         }
 
         toast({
@@ -152,23 +201,16 @@ export default function SetPassword() {
           description: "Welcome to your mentor dashboard.",
         });
 
-        // Redirect to dashboard
         setTimeout(() => {
           navigate("/dashboard/mentor", { replace: true });
         }, 1500);
-      } else {
-        // Email confirmation required
-        toast({
-          title: "Check your email",
-          description: "We've sent you a confirmation link. Please check your email.",
-        });
       }
 
     } catch (error: any) {
-      console.error('Account creation error:', error);
+      console.error('❌ DEBUG - Account creation failed:', error);
       toast({
         title: "Error creating account",
-        description: error.message || "Please try again.",
+        description: error.message || "Please try again or contact support.",
         variant: "destructive",
       });
     } finally {
@@ -182,7 +224,7 @@ export default function SetPassword() {
         <Card>
           <CardContent className="pt-6">
             <div className="text-center">
-              <p className="text-sm text-muted-foreground">Verifying your invitation...</p>
+              <p className="text-sm text-muted-foreground">Verifying your invitation link...</p>
             </div>
           </CardContent>
         </Card>
@@ -194,18 +236,28 @@ export default function SetPassword() {
     <div className="max-w-md mx-auto px-6 py-10">
       <Card>
         <CardHeader>
-          <CardTitle>Create Your Account</CardTitle>
+          <CardTitle>Create Your Mentor Account</CardTitle>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleCreateAccount} className="space-y-4">
             <div>
-              <Label>Email</Label>
-              <Input value={email} readOnly className="bg-muted" />
+              <Label htmlFor="email">Email Address</Label>
+              <Input 
+                id="email"
+                type="email" 
+                value={email} 
+                readOnly 
+                className="bg-muted" 
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                This is the email associated with your mentor application
+              </p>
             </div>
             
             <div>
-              <Label>Create Password</Label>
+              <Label htmlFor="password">Create Password</Label>
               <Input
+                id="password"
                 type="password"
                 placeholder="At least 8 characters"
                 value={pw}
@@ -216,12 +268,13 @@ export default function SetPassword() {
             </div>
             
             <div>
-              <Label>Confirm Password</Label>
+              <Label htmlFor="confirm">Confirm Password</Label>
               <Input
+                id="confirm"
                 type="password"
                 placeholder="Confirm your password"
                 value={confirm}
-                onChange={(e) => setConfirm(e.value)}
+                onChange={(e) => setConfirm(e.target.value)}
                 minLength={8}
                 required
               />
@@ -236,11 +289,11 @@ export default function SetPassword() {
               className="w-full" 
               disabled={!canSubmit || updating}
             >
-              {updating ? "Creating your account..." : "Create Account & Continue"}
+              {updating ? "Creating Account..." : "Create Account & Continue"}
             </Button>
             
             <p className="text-xs text-muted-foreground text-center">
-              You'll be redirected to your mentor dashboard after account creation.
+              By creating an account, you'll gain access to your mentor dashboard.
             </p>
           </form>
         </CardContent>
