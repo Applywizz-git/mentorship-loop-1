@@ -7,18 +7,20 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/hooks/use-toast";
+import { Navbar } from "@/components/ui/navbar";
 
 export default function SetPassword() {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const [mentorId, setMentorId] = useState<string | null>(null);
+  const [email, setEmail] = useState<string>("");
   const [pw, setPw] = useState("");
   const [confirm, setConfirm] = useState("");
   const [loading, setLoading] = useState(true);
+  const [exchanging, setExchanging] = useState(false);
   const [updating, setUpdating] = useState(false);
 
-  // Helper function to get query parameters from the URL
+  // Parse helpers (support code param and hash tokens)
   function getQueryParam(name: string) {
     return new URLSearchParams(location.search).get(name);
   }
@@ -62,7 +64,7 @@ export default function SetPassword() {
       const mentorEmail = data.applicant_email;
       console.log("Mentor email:", mentorEmail);
 
-      // Sign in the mentor manually using the email
+      // Sign in the mentor manually using the email and a temporary password
       const { data: signInData, error: signInError } = await supabase.auth.signIn({
         email: mentorEmail,
         password: 'temporaryPassword', // A temporary password or you can generate one
@@ -79,7 +81,7 @@ export default function SetPassword() {
         return;
       }
 
-      // Check if session is created
+      // Ensure a session is created
       const { session, error: sessionError } = await supabase.auth.getSession();
       if (sessionError || !session) {
         console.error('Error creating session:', sessionError?.message);
@@ -92,8 +94,7 @@ export default function SetPassword() {
         return;
       }
 
-      // Mentor is authenticated, allow them to set their password
-      setMentorId(mentorIdFromUrl); // Save mentorId for later use
+      setEmail(mentorEmail);  // Set email for display in form
       setLoading(false);
     };
 
@@ -101,8 +102,8 @@ export default function SetPassword() {
   }, [location.search]);
 
   const canSubmit = useMemo(
-    () => pw.length >= 8 && pw === confirm && !!mentorId,
-    [pw, confirm, mentorId]
+    () => pw.length >= 8 && pw === confirm && !!email,
+    [pw, confirm, email]
   );
 
   // 3) Handle password update after mentor authentication
@@ -144,10 +145,14 @@ export default function SetPassword() {
             <CardTitle>Set Your Password</CardTitle>
           </CardHeader>
           <CardContent>
-            {loading ? (
+            {loading || exchanging ? (
               <p className="text-sm text-muted-foreground">Preparing your account…</p>
             ) : (
               <form onSubmit={handleSetPassword} className="space-y-4">
+                <div>
+                  <Label>Email</Label>
+                  <Input value={email} readOnly />
+                </div>
                 <div>
                   <Label>Create Password</Label>
                   <Input
