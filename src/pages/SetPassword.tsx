@@ -1,3 +1,4 @@
+// src/pages/SetPassword.tsx
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
@@ -17,7 +18,7 @@ export default function SetPassword() {
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
 
-  // Parse helpers (to get mentorId)
+  // Parse helper to extract the mentorId from the URL
   function getQueryParam(name: string) {
     return new URLSearchParams(location.search).get(name);
   }
@@ -25,10 +26,8 @@ export default function SetPassword() {
   // 1) Extract mentorId and verify it
   useEffect(() => {
     const mentorIdFromUrl = getQueryParam("mentorId");
-    const code = getQueryParam("code");
-    const expiresAt = getQueryParam("expiresAt");
 
-    if (!mentorIdFromUrl || !code) {
+    if (!mentorIdFromUrl) {
       toast({
         title: "Error",
         description: "Invalid link. Please request a new one.",
@@ -38,55 +37,30 @@ export default function SetPassword() {
       return;
     }
 
-    // Check if link has expired
-    if (expiresAt && new Date() > new Date(expiresAt)) {
-      toast({
-        title: "Error",
-        description: "This link has expired.",
-        variant: "destructive",
-      });
-      setLoading(false);
-      return;
-    }
+    // 2) Validate the mentorId by checking if it exists in the database
+    const verifyMentorId = async () => {
+      const { data, error } = await supabase
+        .from("mentors")
+        .select("id")
+        .eq("id", mentorIdFromUrl)
+        .single();
 
-    // 2) Exchange code for session
-    const establishSession = async () => {
-      try {
-        const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-        if (error) throw error;
-
-        const userEmail = data.user?.email ?? "";
-        setMentorId(mentorIdFromUrl); // Save mentorId for later use
-
-        // 3) Validate mentorId by checking if mentor exists in database
-        const { data: mentorData, error: mentorError } = await supabase
-          .from('mentors')
-          .select('id')
-          .eq('id', mentorIdFromUrl)
-          .single();
-
-        if (mentorError || !mentorData) {
-          toast({
-            title: "Error",
-            description: "Mentor not found or invalid link.",
-            variant: "destructive",
-          });
-          setLoading(false);
-          return;
-        }
-
-        setLoading(false);
-      } catch (error) {
+      if (error || !data) {
         toast({
-          title: "Session error",
-          description: error.message ?? "Could not verify your link. Please click the email link again.",
+          title: "Error",
+          description: "Mentor not found or invalid link.",
           variant: "destructive",
         });
         setLoading(false);
+        return;
       }
+
+      // If mentorId is valid, proceed with setting password
+      setMentorId(mentorIdFromUrl);
+      setLoading(false);
     };
 
-    establishSession();
+    verifyMentorId();
   }, [location.search]);
 
   const canSubmit = useMemo(
@@ -102,7 +76,7 @@ export default function SetPassword() {
     try {
       setUpdating(true);
 
-      // Use Supabase to update the password
+      // Update the password in Supabase
       const { error } = await supabase.auth.updateUser({ password: pw });
       if (error) throw error;
 
