@@ -24,11 +24,6 @@ export default function SetPassword() {
   function getQueryParam(name: string) {
     return new URLSearchParams(location.search).get(name);
   }
-  function getHashParam(name: string) {
-    const hash = location.hash.startsWith("#") ? location.hash.slice(1) : location.hash;
-    const params = new URLSearchParams(hash);
-    return params.get(name);
-  }
 
   // 1) Establish a session from the email link and CLAIM mentor row
   useEffect(() => {
@@ -36,59 +31,47 @@ export default function SetPassword() {
       try {
         setExchanging(true);
 
-        // Prefer the newer "code" param (GoTrue PKCE)
+        // Extract mentorId and code from query params
+        const mentorId = getQueryParam("mentorId");
         const code = getQueryParam("code");
-        if (code) {
-          // Use string signature for current supabase-js version
-          const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-          if (error) throw error;
+        const expiresAt = getQueryParam("expiresAt");
 
-          const userEmail = data.user?.email ?? "";
-          setEmail(userEmail);
-
-          // ✅ Link mentor row to this user (no-op if already linked)
-          if (userEmail) {
-            const { error: claimErr } = await supabase.rpc("claim_mentor_by_email", { _email: userEmail });
-            if (claimErr) {
-              // non-fatal, just log
-              console.warn("[SetPassword] claim_mentor_by_email error:", claimErr.message);
-            }
-          }
-
+        if (!mentorId || !code) {
+          toast({
+            title: "Error",
+            description: "Invalid link. Please request a new one.",
+            variant: "destructive",
+          });
           setLoading(false);
           setExchanging(false);
           return;
         }
 
-        // Fallback: older hash tokens (#access_token & #refresh_token)
-        const access_token = getHashParam("access_token");
-        const refresh_token = getHashParam("refresh_token");
-        if (access_token && refresh_token) {
-          const { data, error } = await supabase.auth.setSession({ access_token, refresh_token });
-          if (error) throw error;
-
-          const userEmail = data.user?.email ?? "";
-          setEmail(userEmail);
-
-          // ✅ Link mentor row (no-op if already linked)
-          if (userEmail) {
-            const { error: claimErr } = await supabase.rpc("claim_mentor_by_email", { _email: userEmail });
-            if (claimErr) {
-              console.warn("[SetPassword] claim_mentor_by_email error:", claimErr.message);
-            }
-          }
-
+        // Check if link has expired
+        if (expiresAt && new Date() > new Date(expiresAt)) {
+          toast({
+            title: "Error",
+            description: "This link has expired.",
+            variant: "destructive",
+          });
           setLoading(false);
           setExchanging(false);
           return;
         }
 
-        // If we get here, there was no token — ask user to use the email link again
-        toast({
-          title: "Link invalid or expired",
-          description: "Please open the password setup link from your email again.",
-          variant: "destructive",
-        });
+        // Use the code to establish the session with Supabase
+        const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+        if (error) throw error;
+
+        const userEmail = data.user?.email ?? "";
+        setEmail(userEmail);
+
+        // Link the mentor's account to this user
+        const { error: claimErr } = await supabase.rpc("claim_mentor_by_email", { _email: userEmail });
+        if (claimErr) {
+          console.warn("[SetPassword] claim_mentor_by_email error:", claimErr.message);
+        }
+
         setLoading(false);
         setExchanging(false);
       } catch (e: any) {
@@ -141,13 +124,12 @@ export default function SetPassword() {
 
   return (
     <>
-      
       <div className="max-w-md mx-auto px-6 py-10">
         <Card>
           <CardHeader>
             <CardTitle>Set Your Password</CardTitle>
           </CardHeader>
-        <CardContent>
+          <CardContent>
             {loading || exchanging ? (
               <p className="text-sm text-muted-foreground">Preparing your account…</p>
             ) : (
