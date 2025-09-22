@@ -27,6 +27,8 @@ export default function SetPassword() {
   useEffect(() => {
     const mentorIdFromUrl = getQueryParam("mentorId");
 
+    console.log('mentorId from URL:', mentorIdFromUrl); // Log the mentorId for debugging
+
     if (!mentorIdFromUrl) {
       toast({
         title: "Error",
@@ -41,11 +43,12 @@ export default function SetPassword() {
     const verifyMentorId = async () => {
       const { data, error } = await supabase
         .from("mentors")
-        .select("id, email")
-        .eq("id", mentorIdFromUrl)
+        .select("id, applicant_email, name") // Select necessary fields for validation
+        .eq("id", mentorIdFromUrl) // Match mentorId in the database
         .single();
 
       if (error || !data) {
+        console.error(`Error fetching mentor: ${error?.message || "Mentor not found"}`);
         toast({
           title: "Error",
           description: "Mentor not found or invalid link.",
@@ -55,22 +58,8 @@ export default function SetPassword() {
         return;
       }
 
-      // 3) Authenticate the mentor using the mentorId (sign in or create session)
-      const { data: authData, error: authError } = await supabase.auth.signIn({
-        email: data.email, // Use the email retrieved from the mentor
-      });
-
-      if (authError) {
-        toast({
-          title: "Authentication Error",
-          description: authError.message,
-          variant: "destructive",
-        });
-        setLoading(false);
-        return;
-      }
-
-      setMentorId(mentorIdFromUrl); // Store the mentorId for further actions
+      console.log('Mentor Data:', data); // Log mentor data to verify
+      setMentorId(mentorIdFromUrl); // Save mentorId for later use
       setLoading(false);
     };
 
@@ -82,7 +71,7 @@ export default function SetPassword() {
     [pw, confirm, mentorId]
   );
 
-  // 4) Handle password update after mentor authentication
+  // 3) Handle password update after mentor authentication
   async function handleSetPassword(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
