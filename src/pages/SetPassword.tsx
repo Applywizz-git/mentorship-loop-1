@@ -1,11 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
+import { createClient } from "@supabase/supabase-js";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/hooks/use-toast";
+
+// Create a service role client for admin operations
+const supabaseAdmin = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_SERVICE_ROLE_KEY // Make sure this is in your .env
+);
 
 export default function SetPassword() {
   const location = useLocation();
@@ -26,29 +33,12 @@ export default function SetPassword() {
     const mentorIdFromUrl = getQueryParam("mentorId");
     const emailFromUrl = getQueryParam("email");
 
-    console.log('🔍 DEBUG - URL Params:', { 
-      mentorIdFromUrl, 
-      emailFromUrl,
-      fullUrl: window.location.href,
-      search: location.search 
-    });
+    console.log('🔍 DEBUG - URL Params:', { mentorIdFromUrl, emailFromUrl });
 
-    if (!mentorIdFromUrl) {
-      console.error('❌ DEBUG - Missing mentorId from URL');
+    if (!mentorIdFromUrl || !emailFromUrl) {
       toast({
         title: "Invalid Link",
-        description: "Missing mentor ID in the invitation link.",
-        variant: "destructive",
-      });
-      setLoading(false);
-      return;
-    }
-
-    if (!emailFromUrl) {
-      console.error('❌ DEBUG - Missing email from URL');
-      toast({
-        title: "Invalid Link",
-        description: "Missing email in the invitation link.",
+        description: "Missing required parameters in the invitation link.",
         variant: "destructive",
       });
       setLoading(false);
@@ -60,56 +50,56 @@ export default function SetPassword() {
 
     const verifyMentor = async () => {
       try {
-        console.log('🔍 DEBUG - Starting mentor verification for ID:', mentorIdFromUrl);
+        console.log('🔍 DEBUG - Verifying mentor with ID:', mentorIdFromUrl);
         
-        // First, let's check if the mentors table exists and is accessible
-        const { data: tableCheck, error: tableError } = await supabase
+        // Use the service role client for database access
+        const { data: mentorData, error } = await supabaseAdmin
           .from("mentors")
-          .select("count")
-          .limit(1);
-
-        if (tableError) {
-          console.error('❌ DEBUG - Table access error:', tableError);
-          throw new Error(`Cannot access mentors table: ${tableError.message}`);
-        }
-
-        console.log('✅ DEBUG - Mentors table is accessible');
-
-        // Now query the specific mentor
-        const { data: mentorData, error } = await supabase
-          .from("mentors")
-          .select("id, applicant_email, name, status")
+          .select("id, applicant_email, name, applicant_status") // Use correct column names
           .eq("id", mentorIdFromUrl)
           .single();
 
         console.log('🔍 DEBUG - Query result:', { mentorData, error });
 
         if (error) {
-          console.error('❌ DEBUG - Mentor query error:', error);
-          if (error.code === 'PGRST116') { // No rows returned
-            throw new Error(`Mentor with ID "${mentorIdFromUrl}" not found in the database.`);
+          console.error('❌ DEBUG - Database error:', error);
+          
+          // Try with regular client as fallback
+          const { data: fallbackData, error: fallbackError } = await supabase
+            .from("mentors")
+            .select("id, applicant_email, applicant_status")
+            .eq("id", mentorIdFromUrl)
+            .single();
+            
+          if (fallbackError || !fallbackData) {
+            throw new Error(`Mentor with ID "${mentorIdFromUrl}" not found. Please contact support.`);
           }
-          throw new Error(`Database error: ${error.message}`);
+          
+          // Use fallback data
+          if (fallbackData.applicant_status !== "approved") {
+            throw new Error("Your mentor account is not approved yet.");
+          }
+          
+          if (fallbackData.applicant_email !== emailFromUrl) {
+            throw new Error("Email does not match mentor records.");
+          }
+          
+          setLoading(false);
+          return;
         }
 
         if (!mentorData) {
-          throw new Error("Mentor record not found");
+          throw new Error("Mentor record not found in the database.");
         }
 
-        console.log('✅ DEBUG - Mentor found:', mentorData);
-
-        // Check if mentor is approved
-        if (mentorData.status !== "approved") {
-          throw new Error(`Mentor account status is "${mentorData.status}" but needs to be "approved"`);
+        // Check if mentor is approved - use applicant_status
+        if (mentorData.applicant_status !== "approved") {
+          throw new Error(`Your mentor account status is "${mentorData.applicant_status}" but needs to be "approved".`);
         }
 
-        // Verify email matches
+        // Verify email matches - use applicant_email
         if (mentorData.applicant_email !== emailFromUrl) {
-          console.warn('⚠️ DEBUG - Email mismatch:', {
-            dbEmail: mentorData.applicant_email,
-            urlEmail: emailFromUrl
-          });
-          throw new Error("Email in the link does not match the mentor's registered email.");
+          throw new Error("The email in this link does not match the mentor's registered email.");
         }
 
         console.log('✅ DEBUG - Mentor verification successful');
@@ -140,9 +130,9 @@ export default function SetPassword() {
 
     try {
       setUpdating(true);
-      console.log('🔍 DEBUG - Starting account creation for:', { email, mentorId });
+      console.log('🔍 DEBUG - Creating account for:', email);
 
-      // Simple signup flow
+      // Use the regular client for auth operations (sign up)
       const { data, error } = await supabase.auth.signUp({
         email: email,
         password: pw,
@@ -155,23 +145,31 @@ export default function SetPassword() {
       });
 
       if (error) {
-        console.error('❌ DEBUG - Signup error:', error);
+        console.error('❌ DEBUG - Auth error:', error);
         
         if (error.message.includes('already registered')) {
-          // Try to sign in instead
+          // Try to sign in
           const { error: signInError } = await supabase.auth.signInWithPassword({
             email: email,
             password: pw,
           });
 
           if (signInError) {
-            throw new Error("An account with this email already exists. Please use the password reset feature if you forgot your password.");
+            throw new Error("An account with this email already exists. Please sign in or use password reset.");
           }
 
-          // Sign in successful
+          // Sign in successful - update mentor record with user_id
+          const { data: userData } = await supabase.auth.getUser();
+          if (userData.user) {
+            await supabaseAdmin
+              .from("mentors")
+              .update({ user_id: userData.user.id })
+              .eq("id", mentorId);
+          }
+
           toast({
             title: "Welcome back!",
-            description: "Successfully signed in to your account.",
+            description: "Taking you to your dashboard.",
           });
           
           setTimeout(() => {
@@ -183,17 +181,16 @@ export default function SetPassword() {
       }
 
       if (data.user) {
-        console.log('✅ DEBUG - Account created successfully, user:', data.user.id);
+        console.log('✅ DEBUG - Account created, user ID:', data.user.id);
         
-        // Update mentor record with user_id
-        const { error: updateError } = await supabase
+        // Update mentor record with user_id using admin client
+        const { error: updateError } = await supabaseAdmin
           .from("mentors")
           .update({ user_id: data.user.id })
           .eq("id", mentorId);
 
         if (updateError) {
           console.error('⚠️ DEBUG - Failed to update mentor record:', updateError);
-          // Don't throw error - this is non-critical
         }
 
         toast({
@@ -241,23 +238,13 @@ export default function SetPassword() {
         <CardContent>
           <form onSubmit={handleCreateAccount} className="space-y-4">
             <div>
-              <Label htmlFor="email">Email Address</Label>
-              <Input 
-                id="email"
-                type="email" 
-                value={email} 
-                readOnly 
-                className="bg-muted" 
-              />
-              <p className="text-xs text-muted-foreground mt-1">
-                This is the email associated with your mentor application
-              </p>
+              <Label>Email Address</Label>
+              <Input value={email} readOnly className="bg-muted" />
             </div>
             
             <div>
-              <Label htmlFor="password">Create Password</Label>
+              <Label>Create Password</Label>
               <Input
-                id="password"
                 type="password"
                 placeholder="At least 8 characters"
                 value={pw}
@@ -268,9 +255,8 @@ export default function SetPassword() {
             </div>
             
             <div>
-              <Label htmlFor="confirm">Confirm Password</Label>
+              <Label>Confirm Password</Label>
               <Input
-                id="confirm"
                 type="password"
                 placeholder="Confirm your password"
                 value={confirm}
@@ -291,10 +277,6 @@ export default function SetPassword() {
             >
               {updating ? "Creating Account..." : "Create Account & Continue"}
             </Button>
-            
-            <p className="text-xs text-muted-foreground text-center">
-              By creating an account, you'll gain access to your mentor dashboard.
-            </p>
           </form>
         </CardContent>
       </Card>
