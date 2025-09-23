@@ -134,6 +134,64 @@ export default function SetPassword() {
     [pw, confirm, email]
   );
 
+  // NEW FUNCTION: Create profile record
+  const createProfile = async (userId: string, userEmail: string, mentorName?: string) => {
+    try {
+      console.log('🔍 DEBUG - Creating profile for user:', userId);
+      
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .upsert({
+          id: userId,
+          email: userEmail,
+          full_name: mentorName || '',
+          role: 'mentor',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }, {
+          onConflict: 'id' // This handles the case where profile might already exist
+        });
+
+      if (profileError) {
+        console.error('❌ DEBUG - Profile creation error:', profileError);
+        
+        // If it's a duplicate error, that's okay - profile might already exist
+        if (profileError.code !== '23505') { // 23505 = duplicate key
+          throw new Error(`Failed to create profile: ${profileError.message}`);
+        }
+        console.log('✅ DEBUG - Profile already exists, continuing...');
+      } else {
+        console.log('✅ DEBUG - Profile created successfully');
+      }
+      
+      return true;
+    } catch (error) {
+      console.error('❌ DEBUG - Profile creation failed:', error);
+      throw error;
+    }
+  };
+
+  // NEW FUNCTION: Get mentor name for profile
+  const getMentorName = async (mentorId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('mentors')
+        .select('name')
+        .eq('id', mentorId)
+        .single();
+      
+      if (error) {
+        console.warn('⚠️ DEBUG - Could not fetch mentor name:', error);
+        return '';
+      }
+      
+      return data?.name || '';
+    } catch (error) {
+      console.warn('⚠️ DEBUG - Error fetching mentor name:', error);
+      return '';
+    }
+  };
+
   async function handleCreateAccount(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit || !email || !mentorId) return;
@@ -142,24 +200,31 @@ export default function SetPassword() {
       setUpdating(true);
       console.log('🔍 DEBUG - Starting account creation for:', { email, mentorId });
 
-      // Simple signup flow
-      const { data, error } = await supabase.auth.signUp({
+      // Get mentor name for profile
+      const mentorName = await getMentorName(mentorId);
+
+      // Step 1: Sign up the user
+      const { data: authData, error: authError } = await supabase.auth.signUp({
         email: email,
         password: pw,
         options: {
           data: {
             mentor_id: mentorId,
-            user_type: 'mentor'
-          }
+            user_type: 'mentor',
+            full_name: mentorName
+          },
+          emailRedirectTo: `${window.location.origin}/dashboard/mentor`
         }
       });
 
-      if (error) {
-        console.error('❌ DEBUG - Signup error:', error);
+      if (authError) {
+        console.error('❌ DEBUG - Auth error:', authError);
         
-        if (error.message.includes('already registered')) {
-          // Try to sign in instead
-          const { error: signInError } = await supabase.auth.signInWithPassword({
+        if (authError.message.includes('already registered')) {
+          // User already exists - try to sign in
+          console.log('🔍 DEBUG - User exists, attempting sign in');
+          
+          const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
             email: email,
             password: pw,
           });
@@ -168,7 +233,21 @@ export default function SetPassword() {
             throw new Error("An account with this email already exists. Please use the password reset feature if you forgot your password.");
           }
 
-          // Sign in successful
+          // Sign in successful - ensure profile exists
+          if (signInData.user) {
+            await createProfile(signInData.user.id, email, mentorName);
+            
+            // Update mentor record with user_id
+            const { error: updateError } = await supabase
+              .from("mentors")
+              .update({ user_id: signInData.user.id })
+              .eq("id", mentorId);
+
+            if (updateError) {
+              console.warn('⚠️ DEBUG - Failed to update mentor record:', updateError);
+            }
+          }
+
           toast({
             title: "Welcome back!",
             description: "Successfully signed in to your account.",
@@ -179,31 +258,42 @@ export default function SetPassword() {
           }, 1500);
           return;
         }
-        throw error;
+        throw authError;
       }
 
-      if (data.user) {
-        console.log('✅ DEBUG - Account created successfully, user:', data.user.id);
+      if (authData.user) {
+        console.log('✅ DEBUG - Auth account created, user ID:', authData.user.id);
         
-        // Update mentor record with user_id
+        // Step 2: Create profile record
+        await createProfile(authData.user.id, email, mentorName);
+
+        // Step 3: Update mentor record with user_id
         const { error: updateError } = await supabase
           .from("mentors")
-          .update({ user_id: data.user.id })
+          .update({ 
+            user_id: authData.user.id,
+            application_status: 'approved' // Ensure status is set
+          })
           .eq("id", mentorId);
 
         if (updateError) {
-          console.error('⚠️ DEBUG - Failed to update mentor record:', updateError);
-          // Don't throw error - this is non-critical
+          console.error('❌ DEBUG - Failed to update mentor record:', updateError);
+          throw new Error(`Failed to link mentor account: ${updateError.message}`);
         }
+
+        console.log('✅ DEBUG - Mentor record updated successfully');
 
         toast({
           title: "Account created successfully!",
-          description: "Welcome to your mentor dashboard.",
+          description: "Welcome to your mentor dashboard. You can now sign in with your email and password.",
         });
 
+        // Wait a moment then redirect
         setTimeout(() => {
           navigate("/dashboard/mentor", { replace: true });
-        }, 1500);
+        }, 2000);
+      } else {
+        throw new Error("Failed to create user account");
       }
 
     } catch (error: any) {
