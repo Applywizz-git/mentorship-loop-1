@@ -135,41 +135,41 @@ export default function SetPassword() {
   );
 
   // NEW FUNCTION: Create profile record
-  const createProfile = async (userId: string, userEmail: string, mentorName?: string) => {
-    try {
-      console.log('🔍 DEBUG - Creating profile for user:', userId);
-      
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .upsert({
-          id: userId,
-          email: userEmail,
-          full_name: mentorName || '',
-          role: 'mentor',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        }, {
-          onConflict: 'id' // This handles the case where profile might already exist
-        });
+// CORRECTED FUNCTION: Create profile record
+const createProfile = async (userId: string, userEmail: string, mentorName?: string) => {
+  try {
+    console.log('🔍 DEBUG - Creating profile for user:', userId);
+    
+    const { error: profileError } = await supabase
+      .from('profiles')
+      .upsert({
+        id: userId,
+        email: userEmail,
+        name: mentorName || '', // CHANGED: full_name → name
+        role: 'mentor',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }, {
+        onConflict: 'id'
+      });
 
-      if (profileError) {
-        console.error('❌ DEBUG - Profile creation error:', profileError);
-        
-        // If it's a duplicate error, that's okay - profile might already exist
-        if (profileError.code !== '23505') { // 23505 = duplicate key
-          throw new Error(`Failed to create profile: ${profileError.message}`);
-        }
-        console.log('✅ DEBUG - Profile already exists, continuing...');
-      } else {
-        console.log('✅ DEBUG - Profile created successfully');
-      }
+    if (profileError) {
+      console.error('❌ DEBUG - Profile creation error:', profileError);
       
-      return true;
-    } catch (error) {
-      console.error('❌ DEBUG - Profile creation failed:', error);
-      throw error;
+      if (profileError.code !== '23505') {
+        throw new Error(`Failed to create profile: ${profileError.message}`);
+      }
+      console.log('✅ DEBUG - Profile already exists, continuing...');
+    } else {
+      console.log('✅ DEBUG - Profile created successfully');
     }
-  };
+    
+    return true;
+  } catch (error) {
+    console.error('❌ DEBUG - Profile creation failed:', error);
+    throw error;
+  }
+};
 
   // NEW FUNCTION: Get mentor name for profile
   const getMentorName = async (mentorId: string) => {
