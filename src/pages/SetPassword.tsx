@@ -136,41 +136,43 @@ export default function SetPassword() {
 
   // NEW FUNCTION: Create profile record
 // CORRECTED FUNCTION: Create profile record
+// FINAL CORRECTED VERSION
 const createProfile = async (userId: string, userEmail: string, mentorName?: string) => {
   try {
     console.log('🔍 DEBUG - Creating profile for user:', userId);
     
+    const profileData = {
+      id: userId,
+      user_id: userId, // REQUIRED: matches the id field
+      email: userEmail,
+      name: mentorName || 'New Mentor', // Correct column name is 'name'
+      role: 'mentor',
+      verified: false,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    console.log('🔍 DEBUG - Profile data:', profileData);
+
     const { error: profileError } = await supabase
       .from('profiles')
-      .upsert({
-        id: userId,
-        email: userEmail,
-        name: mentorName || '', // CHANGED: full_name → name
-        role: 'mentor',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }, {
+      .upsert(profileData, {
         onConflict: 'id'
       });
 
     if (profileError) {
       console.error('❌ DEBUG - Profile creation error:', profileError);
-      
-      if (profileError.code !== '23505') {
-        throw new Error(`Failed to create profile: ${profileError.message}`);
-      }
-      console.log('✅ DEBUG - Profile already exists, continuing...');
-    } else {
-      console.log('✅ DEBUG - Profile created successfully');
+      throw new Error(`Failed to create profile: ${profileError.message}`);
     }
-    
+
+    console.log('✅ DEBUG - Profile created/updated successfully');
     return true;
+
   } catch (error) {
     console.error('❌ DEBUG - Profile creation failed:', error);
     throw error;
   }
 };
-
   // NEW FUNCTION: Get mentor name for profile
   const getMentorName = async (mentorId: string) => {
     try {
