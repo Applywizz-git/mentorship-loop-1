@@ -264,19 +264,16 @@ async function handleCreateAccount(e: React.FormEvent) {
           // DEBUG: Check if mentor record already has a user_id
           const { data: existingMentor } = await supabase
             .from("mentors")
-            .select("user_id, id, name")
+            .select("user_id, id, name, applicant_email")
             .eq("user_id", signInData.user.id)
             .maybeSingle();
 
           console.log('🔍 DEBUG - Existing mentor with this user_id:', existingMentor);
 
-          // Only update if the mentor record doesn't have a user_id or if it's different
-          if (existingMentor && existingMentor.user_id === signInData.user.id) {
+          if (existingMentor) {
             if (existingMentor.id !== mentorId) {
-              // User is already linked to a different mentor record
-              throw new Error(`This account is already associated with another mentor profile (${existingMentor.name}). Please contact support.`);
+              throw new Error(`This account is already associated with mentor "${existingMentor.name}" (${existingMentor.applicant_email}). Please contact support.`);
             } else {
-              // User is already correctly linked to this mentor record
               console.log('✅ DEBUG - Mentor record already correctly linked');
             }
           } else {
@@ -287,11 +284,8 @@ async function handleCreateAccount(e: React.FormEvent) {
               .eq("id", mentorId);
 
             if (updateError) {
-              // Handle duplicate key error specifically
-              if (updateError.code === '23505') { // Unique constraint violation
-                console.error('❌ DEBUG - Duplicate user_id error:', updateError);
-                
-                // Find which mentor has this user_id
+              console.error('❌ DEBUG - Mentor update error:', updateError);
+              if (updateError.code === '23505') {
                 const { data: conflictingMentor } = await supabase
                   .from("mentors")
                   .select("id, name, applicant_email")
@@ -299,9 +293,7 @@ async function handleCreateAccount(e: React.FormEvent) {
                   .single();
 
                 if (conflictingMentor) {
-                  throw new Error(`This account is already linked to mentor "${conflictingMentor.name}" (${conflictingMentor.applicant_email}). Please contact support to resolve this conflict.`);
-                } else {
-                  throw new Error("This account is already associated with another mentor profile. Please contact support.");
+                  throw new Error(`This account is already linked to mentor "${conflictingMentor.name}". Please contact support.`);
                 }
               }
               throw new Error(`Failed to link mentor account: ${updateError.message}`);
@@ -329,17 +321,21 @@ async function handleCreateAccount(e: React.FormEvent) {
       await createProfile(authData.user.id, email, mentorName);
       await verifyProfileRole(authData.user.id);
 
-      // Check for existing mentor association before updating
-      const { data: existingMentor } = await supabase
+      // FIXED: Properly check for existing mentor association
+      const { data: existingMentor, error: existingMentorError } = await supabase
         .from("mentors")
-        .select("user_id")
+        .select("id, name, applicant_email")
         .eq("user_id", authData.user.id)
         .maybeSingle();
 
-      if (existingMentor) {
-        throw new Error("This user account is already associated with another mentor profile. Please contact support.");
+      if (existingMentorError) {
+        console.error('❌ DEBUG - Error checking existing mentor:', existingMentorError);
+        // Continue with the update despite the query error
+      } else if (existingMentor && existingMentor.id !== mentorId) {
+        throw new Error(`This account is already associated with mentor "${existingMentor.name}" (${existingMentor.applicor_email}). Please contact support.`);
       }
 
+      // Proceed with updating the mentor record
       const { error: updateError } = await supabase
         .from("mentors")
         .update({ 
@@ -349,8 +345,8 @@ async function handleCreateAccount(e: React.FormEvent) {
         .eq("id", mentorId);
 
       if (updateError) {
+        console.error('❌ DEBUG - Mentor update error:', updateError);
         if (updateError.code === '23505') {
-          // Find the conflicting mentor
           const { data: conflictingMentor } = await supabase
             .from("mentors")
             .select("id, name, applicant_email")
@@ -389,7 +385,6 @@ async function handleCreateAccount(e: React.FormEvent) {
     setUpdating(false);
   }
 }
-
   if (loading) {
     return (
       <div className="max-w-md mx-auto px-6 py-10">
