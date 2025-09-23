@@ -78,7 +78,7 @@ export default function SetPassword() {
         // Now query the specific mentor
         const { data: mentorData, error } = await supabase
           .from("mentors")
-          .select("id, applicant_email, name, applicant_status")
+          .select("id, applicant_email, name, application_status")
           .eq("id", mentorIdFromUrl)
           .single();
 
@@ -99,8 +99,8 @@ export default function SetPassword() {
         console.log('✅ DEBUG - Mentor found:', mentorData);
 
         // Check if mentor is approved
-        if (mentorData.applicant_status !== "approved") {
-          throw new Error(`Mentor account status is "${mentorData.applicant_status}" but needs to be "approved"`);
+        if (mentorData.application_status !== "approved") {
+          throw new Error(`Mentor account status is "${mentorData.application_status}" but needs to be "approved"`);
         }
 
         // Verify email matches
