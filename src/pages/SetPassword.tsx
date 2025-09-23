@@ -62,20 +62,6 @@ export default function SetPassword() {
       try {
         console.log('🔍 DEBUG - Starting mentor verification for ID:', mentorIdFromUrl);
         
-        // First, let's check if the mentors table exists and is accessible
-        const { data: tableCheck, error: tableError } = await supabase
-          .from("mentors")
-          .select("count")
-          .limit(1);
-
-        if (tableError) {
-          console.error('❌ DEBUG - Table access error:', tableError);
-          throw new Error(`Cannot access mentors table: ${tableError.message}`);
-        }
-
-        console.log('✅ DEBUG - Mentors table is accessible');
-
-        // Now query the specific mentor
         const { data: mentorData, error } = await supabase
           .from("mentors")
           .select("id, applicant_email, name, application_status")
@@ -86,7 +72,7 @@ export default function SetPassword() {
 
         if (error) {
           console.error('❌ DEBUG - Mentor query error:', error);
-          if (error.code === 'PGRST116') { // No rows returned
+          if (error.code === 'PGRST116') {
             throw new Error(`Mentor with ID "${mentorIdFromUrl}" not found in the database.`);
           }
           throw new Error(`Database error: ${error.message}`);
@@ -98,12 +84,10 @@ export default function SetPassword() {
 
         console.log('✅ DEBUG - Mentor found:', mentorData);
 
-        // Check if mentor is approved
         if (mentorData.application_status !== "approved") {
           throw new Error(`Mentor account status is "${mentorData.application_status}" but needs to be "approved"`);
         }
 
-        // Verify email matches
         if (mentorData.applicant_email !== emailFromUrl) {
           console.warn('⚠️ DEBUG - Email mismatch:', {
             dbEmail: mentorData.applicant_email,
@@ -134,46 +118,83 @@ export default function SetPassword() {
     [pw, confirm, email]
   );
 
-  // NEW FUNCTION: Create profile record
-// CORRECTED FUNCTION: Create profile record
-// FINAL CORRECTED VERSION
-const createProfile = async (userId: string, userEmail: string, mentorName?: string) => {
-  try {
-    console.log('🔍 DEBUG - Creating profile for user:', userId);
-    
-    const profileData = {
-      id: userId,
-      user_id: userId, // REQUIRED: matches the id field
-      email: userEmail,
-      name: mentorName || 'New Mentor', // Correct column name is 'name'
-      role: 'mentor',
-      verified: false,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
+  // UPDATED: Create profile with proper column names and role enforcement
+  const createProfile = async (userId: string, userEmail: string, mentorName?: string) => {
+    try {
+      console.log('🔍 DEBUG - Creating/updating mentor profile for user:', userId);
+      
+      const profileData = {
+        id: userId,
+        user_id: userId,
+        email: userEmail,
+        name: mentorName || 'New Mentor',
+        role: 'mentor', // ENSURED: This will always be 'mentor'
+        verified: false,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
 
-    console.log('🔍 DEBUG - Profile data:', profileData);
+      console.log('🔍 DEBUG - Profile data (ensuring mentor role):', profileData);
 
-    const { error: profileError } = await supabase
-      .from('profiles')
-      .upsert(profileData, {
-        onConflict: 'id'
-      });
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .upsert(profileData, {
+          onConflict: 'id',
+          ignoreDuplicates: false
+        });
 
-    if (profileError) {
-      console.error('❌ DEBUG - Profile creation error:', profileError);
-      throw new Error(`Failed to create profile: ${profileError.message}`);
+      if (profileError) {
+        console.error('❌ DEBUG - Profile creation error:', profileError);
+        throw new Error(`Failed to create profile: ${profileError.message}`);
+      }
+
+      console.log('✅ DEBUG - Mentor profile created/updated successfully');
+      return true;
+
+    } catch (error) {
+      console.error('❌ DEBUG - Profile creation failed:', error);
+      throw error;
     }
+  };
 
-    console.log('✅ DEBUG - Profile created/updated successfully');
-    return true;
+  // NEW: Add profile verification function
+  const verifyProfileRole = async (userId: string) => {
+    try {
+      const { data: profile, error } = await supabase
+        .from('profiles')
+        .select('role, name, email')
+        .eq('id', userId)
+        .single();
 
-  } catch (error) {
-    console.error('❌ DEBUG - Profile creation failed:', error);
-    throw error;
-  }
-};
-  // NEW FUNCTION: Get mentor name for profile
+      if (error) {
+        console.error('❌ DEBUG - Profile verification error:', error);
+        return false;
+      }
+
+      console.log('🔍 DEBUG - Profile verification result:', profile);
+      
+      if (profile.role !== 'mentor') {
+        console.warn('⚠️ DEBUG - Profile has incorrect role, updating to mentor');
+        const { error: updateError } = await supabase
+          .from('profiles')
+          .update({ role: 'mentor', updated_at: new Date().toISOString() })
+          .eq('id', userId);
+
+        if (updateError) {
+          console.error('❌ DEBUG - Role update error:', updateError);
+          return false;
+        }
+        console.log('✅ DEBUG - Role updated to mentor successfully');
+      }
+
+      return true;
+    } catch (error) {
+      console.error('❌ DEBUG - Role verification failed:', error);
+      return false;
+    }
+  };
+
+  // Get mentor name for profile
   const getMentorName = async (mentorId: string) => {
     try {
       const { data, error } = await supabase
@@ -194,6 +215,7 @@ const createProfile = async (userId: string, userEmail: string, mentorName?: str
     }
   };
 
+  // UPDATED: handleCreateAccount with role enforcement
   async function handleCreateAccount(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit || !email || !mentorId) return;
@@ -202,7 +224,6 @@ const createProfile = async (userId: string, userEmail: string, mentorName?: str
       setUpdating(true);
       console.log('🔍 DEBUG - Starting account creation for:', { email, mentorId });
 
-      // Get mentor name for profile
       const mentorName = await getMentorName(mentorId);
 
       // Step 1: Sign up the user
@@ -223,7 +244,6 @@ const createProfile = async (userId: string, userEmail: string, mentorName?: str
         console.error('❌ DEBUG - Auth error:', authError);
         
         if (authError.message.includes('already registered')) {
-          // User already exists - try to sign in
           console.log('🔍 DEBUG - User exists, attempting sign in');
           
           const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
@@ -235,11 +255,12 @@ const createProfile = async (userId: string, userEmail: string, mentorName?: str
             throw new Error("An account with this email already exists. Please use the password reset feature if you forgot your password.");
           }
 
-          // Sign in successful - ensure profile exists
           if (signInData.user) {
-            await createProfile(signInData.user.id, email, mentorName);
+            console.log('🔍 DEBUG - User signed in, ensuring mentor profile:', signInData.user.id);
             
-            // Update mentor record with user_id
+            await createProfile(signInData.user.id, email, mentorName);
+            await verifyProfileRole(signInData.user.id);
+            
             const { error: updateError } = await supabase
               .from("mentors")
               .update({ user_id: signInData.user.id })
@@ -252,7 +273,7 @@ const createProfile = async (userId: string, userEmail: string, mentorName?: str
 
           toast({
             title: "Welcome back!",
-            description: "Successfully signed in to your account.",
+            description: "Successfully signed in to your mentor account.",
           });
           
           setTimeout(() => {
@@ -266,15 +287,14 @@ const createProfile = async (userId: string, userEmail: string, mentorName?: str
       if (authData.user) {
         console.log('✅ DEBUG - Auth account created, user ID:', authData.user.id);
         
-        // Step 2: Create profile record
         await createProfile(authData.user.id, email, mentorName);
+        await verifyProfileRole(authData.user.id);
 
-        // Step 3: Update mentor record with user_id
         const { error: updateError } = await supabase
           .from("mentors")
           .update({ 
             user_id: authData.user.id,
-            application_status: 'approved' // Ensure status is set
+            application_status: 'approved'
           })
           .eq("id", mentorId);
 
@@ -286,11 +306,10 @@ const createProfile = async (userId: string, userEmail: string, mentorName?: str
         console.log('✅ DEBUG - Mentor record updated successfully');
 
         toast({
-          title: "Account created successfully!",
-          description: "Welcome to your mentor dashboard. You can now sign in with your email and password.",
+          title: "Mentor account created successfully!",
+          description: "Welcome to your mentor dashboard.",
         });
 
-        // Wait a moment then redirect
         setTimeout(() => {
           navigate("/dashboard/mentor", { replace: true });
         }, 2000);
