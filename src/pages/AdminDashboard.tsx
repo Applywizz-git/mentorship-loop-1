@@ -224,68 +224,244 @@ const AdminDashboard = () => {
     setViewOpen(true);
   };
 
-  const handleApproveApplication = async (app: any) => {
-  try {
-    // Get the mentor's email from the mentors table
-    const { data: mentorData, error: mentorError } = await supabase
-      .from("mentors")
-      .select("applicant_email")  // Assuming 'applicant_email' is stored in the mentors table
-      .eq("id", app.id)
-      .single();
+  // @ts-nocheck
 
-    if (mentorError || !mentorData?.applicant_email) {
-      throw new Error("Mentor email is missing or there was an error fetching it.");
-    }
+/// <reference lib="deno.ns" />
+/// <reference lib="dom" />
 
-    const email = mentorData.applicant_email;
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.7";
 
-    // 🔔 Call Edge Function to approve (idempotent) + send invite if needed
-    const { data, error } = await supabase.functions.invoke("mentor-invite", {
-      body: {
-        mode: "mentor-invite",        // Ensure mode is set correctly
-        mentorId: app.id,             // Ensure mentorId is passed correctly
-        email: email,                 // Use mentor's email from the mentors table
-        redirectTo: `${window.location.origin}/set-password`, // Password setup URL
-      },
-    });
-
-    if (error) throw error;
-
-    // ✅ If the user already exists, send reset-pw email to /set-password
-    if (data?.alreadyRegistered) {
-      const { error: resetErr } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/set-password`,
-      });
-      if (resetErr) throw resetErr;
-      toast({
-        title: "Mentor Approved",
-        description: "Existing account detected — sent password reset email.",
-      });
-    } else if (data?.alreadyApproved) {
-      toast({
-        title: "Already Approved",
-        description: "This mentor was already approved. No new email sent.",
-      });
-    } else {
-      toast({
-        title: "Mentor Approved",
-        description: "Invite email sent with password setup link.",
-      });
-    }
-
-    // Remove the row locally for snappier UI (server refresh also runs)
-    setPendingApps((rows) => rows.filter((r) => r.id !== app.id));
-    await refresh();
-  } catch (e: any) {
-    toast({
-      title: "Approve failed",
-      description: e?.message ?? "Please try again.",
-      variant: "destructive",
-    });
-  }
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, x-webhook-secret",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
+// ===== ENV =====
+const TENANT_ID = Deno.env.get("TENANT_ID")!;
+const CLIENT_ID = Deno.env.get("CLIENT_ID")!;
+const CLIENT_SECRET = Deno.env.get("CLIENT_SECRET")!;
+const SENDER_EMAIL = Deno.env.get("SENDER_EMAIL")!;
+const PROJECT_URL = Deno.env.get("PROJECT_URL")!;
+const SERVICE_ROLE_KEY = Deno.env.get("SERVICE_ROLE_KEY")!;
+const WEBHOOK_SECRET = Deno.env.get("WEBHOOK_SECRET") || "";
 
+// Supabase admin client
+const sb = createClient(PROJECT_URL, SERVICE_ROLE_KEY);
+
+// ===== Microsoft Graph helpers =====
+async function getGraphToken(): Promise<string> {
+  const body = new URLSearchParams();
+  body.set("client_id", CLIENT_ID);
+  body.set("client_secret", CLIENT_SECRET);
+  body.set("scope", "https://graph.microsoft.com/.default");
+  body.set("grant_type", "client_credentials");
+
+  const res = await fetch(
+    `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`,
+    { method: "POST", body }
+  );
+  if (!res.ok) throw new Error(`Token error ${res.status}: ${await res.text()}`);
+  const json = await res.json();
+  return json.access_token as string;
+}
+
+async function sendGraphMail(
+  to: string,
+  subject: string,
+  body: string,
+  kind: "Text" | "HTML" = "Text"
+) {
+  const token = await getGraphToken();
+  const endpoint = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(SENDER_EMAIL)}/sendMail`;
+
+  const payload = {
+    message: {
+      subject,
+      body: { contentType: kind, content: body },
+      toRecipients: [{ emailAddress: { address: to } }],
+    },
+    saveToSentItems: true,
+  };
+
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) throw new Error(`sendMail failed ${res.status}: ${await res.text()}`);
+}
+
+// ===== Mentor contact helper =====
+async function getMentorContact(mentorId) {
+  console.log(`Fetching mentor data for mentorId: ${mentorId}`);
+  
+  // ✅ CORRECT: Use application_status instead of applicant_status
+  const { data: mentor, error } = await sb
+    .from("mentors")
+    .select("id, applicant_email, user_id, name, application_status")
+    .eq("id", mentorId)
+    .single();
+
+  if (error || !mentor) {
+    console.error(`Error fetching mentor: ${error?.message || "Mentor not found"}`);
+    throw new Error(error?.message || "Mentor not found");
+  }
+
+  let mentorEmail = mentor.applicant_email;
+  console.log(`Found mentor email: ${mentorEmail}, status: ${mentor.application_status}`);
+
+  // If applicant_email is null or empty, check profiles table (fallback)
+  if (!mentorEmail && mentor.user_id) {
+    const { data: profile, error: pErr } = await sb
+      .from("profiles")
+      .select("email")
+      .eq("id", mentor.user_id)
+      .single();
+    if (!pErr && profile?.email) {
+      mentorEmail = profile.email;
+      console.log(`Found mentor email from profiles: ${mentorEmail}`);
+    }
+  }
+
+  // If still no email found, check Supabase Auth
+  if (!mentorEmail && mentor.user_id) {
+    const { data, error: uErr } = await sb.auth.admin.getUserById(mentor.user_id);
+    if (!uErr && data?.user?.email) {
+      mentorEmail = data.user.email;
+      console.log(`Found mentor email from auth: ${mentorEmail}`);
+    }
+  }
+
+  return {
+    mentor,
+    mentorEmail
+  };
+}
+
+// ===== DB Webhook helpers =====
+function isDbWebhookPayload(x: any) {
+  return x && typeof x === "object" && "type" in x && "table" in x && "record" in x;
+}
+
+// Map your schema/statuses to internal modes - ✅ CORRECT COLUMN NAME
+function mapWebhookToMode(payload) {
+  const rec = payload.record || {};
+  const norm = (v) => (v ?? "").toString().trim().toLowerCase();
+  
+  // ✅ CORRECT: Use application_status instead of applicant_status
+  const status = norm(rec.application_status);
+
+  if (payload.table !== "mentors") return null;
+
+  // Handle mentor invite event
+  if (payload.type === "INSERT" && status === "approved") {
+    console.log(`Detected mentor invite for mentorId: ${rec.id}`);
+    return {
+      mode: "mentor-invite",
+      mentorId: rec.id
+    };
+  }
+  return null;
+}
+
+// ===== HTTP handler =====
+Deno.serve(async (req) => {
+  console.log("Request received:", req);
+
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+
+  try {
+    let body = {};
+    try {
+      body = await req.json();
+      console.log("Parsed request body:", body);
+    } catch {
+      console.error("Failed to parse request body");
+      body = {};
+    }
+
+    let { mode, mentorId } = body;
+    if (isDbWebhookPayload(body)) {
+      const translated = mapWebhookToMode(body);
+      if (!translated) {
+        console.log("Skipping invalid payload");
+        return new Response(JSON.stringify({ ok: true, skipped: true }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      mode = translated.mode;
+      mentorId = translated.mentorId;
+    }
+
+    if (!mode) {
+      console.error("Missing mode in request");
+      return new Response(JSON.stringify({ error: "mode required" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
+    }
+
+    // ---- MENTOR INVITE ----
+    if (mode === "mentor-invite") {
+      console.log("Processing mentor invite for mentorId:", mentorId);
+
+      if (!mentorId) {
+        console.error("mentorId missing");
+        return new Response(
+          JSON.stringify({ error: "mentorId is required for mode=mentor-invite" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Load mentor details (name and email)
+      const { mentor, mentorEmail } = await getMentorContact(mentorId);
+
+      // ✅ CORRECT: Check application_status instead of applicant_status
+      if (mentor.application_status !== "approved") {
+        console.error(`Mentor status is '${mentor.application_status}', not 'approved'`);
+        return new Response(
+          JSON.stringify({ error: `Mentor status is ${mentor.application_status}, not approved` }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Send the mentor invite email
+      const setPasswordLink = `https://mentorship-loop-1.vercel.app/set-password?mentorId=${mentorId}&email=${encodeURIComponent(mentorEmail)}`;
+      if (mentorEmail) {
+        console.log("Sending mentor invite email to:", mentorEmail);
+        await sendGraphMail(
+          mentorEmail,
+          "Welcome to Mentor Platform - Set Your Password",
+          `Hello ${mentor.name || 'there'},\n\nPlease set your password to access your mentor dashboard:\n\n${setPasswordLink}\n\nClick the link above to create your account.`,
+          "Text"
+        );
+      }
+
+      // Return success
+      console.log("Mentor invite sent successfully.");
+      return new Response(JSON.stringify({ ok: true, mentorEmail }), {
+        headers: corsHeaders
+      });
+    }
+
+    return new Response(JSON.stringify({ error: "invalid mode" }), {
+      status: 400,
+      headers: { ...corsHeaders, "Content-Type": "application/json" }
+    });
+  } catch (e) {
+    console.error("[mentor-invite-mails] error:", e?.message || e);
+    return new Response(
+      JSON.stringify({ error: e?.message || String(e) }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+});
   const handleRejectApplication = async (app: any) => {
     try {
       const { error } = await supabase
