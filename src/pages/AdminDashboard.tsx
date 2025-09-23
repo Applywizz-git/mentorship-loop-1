@@ -229,7 +229,7 @@ const AdminDashboard = () => {
     // 1. First, update the mentor's status to "approved"
     const { error: updateError } = await supabase
       .from("mentors")
-      .update({ status: "approved" }) // Update status first
+      .update({ application_status: "approved" }) // Update status first
       .eq("id", app.id);
 
     if (updateError) {
@@ -239,7 +239,7 @@ const AdminDashboard = () => {
     // 2. Get the mentor's email from the mentors table
     const { data: mentorData, error: mentorError } = await supabase
       .from("mentors")
-      .select("applicant_email, status") // Also select status to verify
+      .select("applicant_email, application_status") // Also select status to verify
       .eq("id", app.id)
       .single();
 
