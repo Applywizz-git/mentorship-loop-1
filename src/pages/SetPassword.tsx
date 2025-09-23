@@ -216,118 +216,179 @@ export default function SetPassword() {
   };
 
   // UPDATED: handleCreateAccount with role enforcement
-  async function handleCreateAccount(e: React.FormEvent) {
-    e.preventDefault();
-    if (!canSubmit || !email || !mentorId) return;
+async function handleCreateAccount(e: React.FormEvent) {
+  e.preventDefault();
+  if (!canSubmit || !email || !mentorId) return;
 
-    try {
-      setUpdating(true);
-      console.log('🔍 DEBUG - Starting account creation for:', { email, mentorId });
+  try {
+    setUpdating(true);
+    console.log('🔍 DEBUG - Starting account creation for:', { email, mentorId });
 
-      const mentorName = await getMentorName(mentorId);
+    const mentorName = await getMentorName(mentorId);
 
-      // Step 1: Sign up the user
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email: email,
-        password: pw,
-        options: {
-          data: {
-            mentor_id: mentorId,
-            user_type: 'mentor',
-            full_name: mentorName
-          },
-          emailRedirectTo: `${window.location.origin}/dashboard/mentor`
-        }
-      });
+    // Step 1: Sign up the user
+    const { data: authData, error: authError } = await supabase.auth.signUp({
+      email: email,
+      password: pw,
+      options: {
+        data: {
+          mentor_id: mentorId,
+          user_type: 'mentor',
+          full_name: mentorName
+        },
+        emailRedirectTo: `${window.location.origin}/dashboard/mentor`
+      }
+    });
 
-      if (authError) {
-        console.error('❌ DEBUG - Auth error:', authError);
+    if (authError) {
+      console.error('❌ DEBUG - Auth error:', authError);
+      
+      if (authError.message.includes('already registered')) {
+        console.log('🔍 DEBUG - User exists, attempting sign in');
         
-        if (authError.message.includes('already registered')) {
-          console.log('🔍 DEBUG - User exists, attempting sign in');
+        const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+          email: email,
+          password: pw,
+        });
+
+        if (signInError) {
+          throw new Error("An account with this email already exists. Please use the password reset feature if you forgot your password.");
+        }
+
+        if (signInData.user) {
+          console.log('🔍 DEBUG - User signed in, ensuring mentor profile:', signInData.user.id);
           
-          const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-            email: email,
-            password: pw,
-          });
+          await createProfile(signInData.user.id, email, mentorName);
+          await verifyProfileRole(signInData.user.id);
+          
+          // DEBUG: Check if mentor record already has a user_id
+          const { data: existingMentor } = await supabase
+            .from("mentors")
+            .select("user_id, id, name")
+            .eq("user_id", signInData.user.id)
+            .maybeSingle();
 
-          if (signInError) {
-            throw new Error("An account with this email already exists. Please use the password reset feature if you forgot your password.");
-          }
+          console.log('🔍 DEBUG - Existing mentor with this user_id:', existingMentor);
 
-          if (signInData.user) {
-            console.log('🔍 DEBUG - User signed in, ensuring mentor profile:', signInData.user.id);
-            
-            await createProfile(signInData.user.id, email, mentorName);
-            await verifyProfileRole(signInData.user.id);
-            
+          // Only update if the mentor record doesn't have a user_id or if it's different
+          if (existingMentor && existingMentor.user_id === signInData.user.id) {
+            if (existingMentor.id !== mentorId) {
+              // User is already linked to a different mentor record
+              throw new Error(`This account is already associated with another mentor profile (${existingMentor.name}). Please contact support.`);
+            } else {
+              // User is already correctly linked to this mentor record
+              console.log('✅ DEBUG - Mentor record already correctly linked');
+            }
+          } else {
+            // Update mentor record with user_id (safe to do now)
             const { error: updateError } = await supabase
               .from("mentors")
               .update({ user_id: signInData.user.id })
               .eq("id", mentorId);
 
             if (updateError) {
-              console.warn('⚠️ DEBUG - Failed to update mentor record:', updateError);
+              // Handle duplicate key error specifically
+              if (updateError.code === '23505') { // Unique constraint violation
+                console.error('❌ DEBUG - Duplicate user_id error:', updateError);
+                
+                // Find which mentor has this user_id
+                const { data: conflictingMentor } = await supabase
+                  .from("mentors")
+                  .select("id, name, applicant_email")
+                  .eq("user_id", signInData.user.id)
+                  .single();
+
+                if (conflictingMentor) {
+                  throw new Error(`This account is already linked to mentor "${conflictingMentor.name}" (${conflictingMentor.applicant_email}). Please contact support to resolve this conflict.`);
+                } else {
+                  throw new Error("This account is already associated with another mentor profile. Please contact support.");
+                }
+              }
+              throw new Error(`Failed to link mentor account: ${updateError.message}`);
             }
+            console.log('✅ DEBUG - Mentor record updated successfully');
           }
-
-          toast({
-            title: "Welcome back!",
-            description: "Successfully signed in to your mentor account.",
-          });
-          
-          setTimeout(() => {
-            navigate("/dashboard/mentor", { replace: true });
-          }, 1500);
-          return;
         }
-        throw authError;
-      }
-
-      if (authData.user) {
-        console.log('✅ DEBUG - Auth account created, user ID:', authData.user.id);
-        
-        await createProfile(authData.user.id, email, mentorName);
-        await verifyProfileRole(authData.user.id);
-
-        const { error: updateError } = await supabase
-          .from("mentors")
-          .update({ 
-            user_id: authData.user.id,
-            application_status: 'approved'
-          })
-          .eq("id", mentorId);
-
-        if (updateError) {
-          console.error('❌ DEBUG - Failed to update mentor record:', updateError);
-          throw new Error(`Failed to link mentor account: ${updateError.message}`);
-        }
-
-        console.log('✅ DEBUG - Mentor record updated successfully');
 
         toast({
-          title: "Mentor account created successfully!",
-          description: "Welcome to your mentor dashboard.",
+          title: "Welcome back!",
+          description: "Successfully signed in to your mentor account.",
         });
-
+        
         setTimeout(() => {
           navigate("/dashboard/mentor", { replace: true });
-        }, 2000);
-      } else {
-        throw new Error("Failed to create user account");
+        }, 1500);
+        return;
+      }
+      throw authError;
+    }
+
+    if (authData.user) {
+      console.log('✅ DEBUG - Auth account created, user ID:', authData.user.id);
+      
+      await createProfile(authData.user.id, email, mentorName);
+      await verifyProfileRole(authData.user.id);
+
+      // Check for existing mentor association before updating
+      const { data: existingMentor } = await supabase
+        .from("mentors")
+        .select("user_id")
+        .eq("user_id", authData.user.id)
+        .maybeSingle();
+
+      if (existingMentor) {
+        throw new Error("This user account is already associated with another mentor profile. Please contact support.");
       }
 
-    } catch (error: any) {
-      console.error('❌ DEBUG - Account creation failed:', error);
+      const { error: updateError } = await supabase
+        .from("mentors")
+        .update({ 
+          user_id: authData.user.id,
+          application_status: 'approved'
+        })
+        .eq("id", mentorId);
+
+      if (updateError) {
+        if (updateError.code === '23505') {
+          // Find the conflicting mentor
+          const { data: conflictingMentor } = await supabase
+            .from("mentors")
+            .select("id, name, applicant_email")
+            .eq("user_id", authData.user.id)
+            .single();
+
+          if (conflictingMentor) {
+            throw new Error(`This account is already linked to mentor "${conflictingMentor.name}". Please contact support.`);
+          }
+        }
+        throw new Error(`Failed to link mentor account: ${updateError.message}`);
+      }
+
+      console.log('✅ DEBUG - Mentor record updated successfully');
+
       toast({
-        title: "Error creating account",
-        description: error.message || "Please try again or contact support.",
-        variant: "destructive",
+        title: "Mentor account created successfully!",
+        description: "Welcome to your mentor dashboard.",
       });
-    } finally {
-      setUpdating(false);
+
+      setTimeout(() => {
+        navigate("/dashboard/mentor", { replace: true });
+      }, 2000);
+    } else {
+      throw new Error("Failed to create user account");
     }
+
+  } catch (error: any) {
+    console.error('❌ DEBUG - Account creation failed:', error);
+    toast({
+      title: "Error creating account",
+      description: error.message || "Please try again or contact support.",
+      variant: "destructive",
+    });
+  } finally {
+    setUpdating(false);
   }
+}
 
   if (loading) {
     return (
